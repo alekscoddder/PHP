@@ -1,0 +1,64 @@
+<?php
+/*
+* The module adds to the rules an additional condition for checking whether the 
+* product belongs to certain categories of the product.
+* It is necessary for the rule of altnative calculation of the cost of delivery.
+*/
+
+/*
+* Implementation hook_rules_condition_info
+*/
+
+function check_product_type_rules_condition_info() {
+	// Return the array of data needed to declare its comparison procedure.
+	return array(
+		'check_product_type_condition_package_type' => array(
+			'label' => t('Product is a MN Media product'),
+			'module' => 'check_product_type',
+		),
+	);
+}
+
+/**
+ * Condition packages_condition_packagetype
+ */
+function check_product_type_condition_package_type() {
+	// Gets a list of items in cart for current user.
+	global $user;
+	$commerce_order = commerce_cart_order_load($user->uid);
+	$line_items = $commerce_order->commerce_line_items['und'];
+	$flags = 0;
+	// Consistently check all the items of the cart.
+	foreach ($line_items as $lid) {
+	   $line_item = commerce_line_item_load($lid['line_item_id']);
+		if ( isset($line_item->commerce_product)) {
+			// If the line item is a product - we receive the data about the product.
+		   $pid = $line_item->commerce_product['und'][0]['product_id'];
+		   $product =  commerce_product_load($pid);
+		   // Checks the desired properties of the goods for compliance with certain categories.
+		   if (!(($product->type == 'dvd_single')||($product->type == 'books'))) {
+			   $flags = 1;
+		   }
+		}
+	}
+	// Return the result of the check.
+	if ($flags == 1) {
+		return FALSE;
+	}
+	else {
+		return TRUE;
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

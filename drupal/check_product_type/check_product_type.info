@@ -1,0 +1,3 @@
+name = Check product type
+description = Allows check product type in cart.
+core = 7.x
