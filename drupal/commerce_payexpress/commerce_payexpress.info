@@ -1,0 +1,8 @@
+name = Payexpress
+description = Payexpress for a secured payment method in drupal commerce
+package = Commerce
+core = 7.x
+configure = admin/commerce/config/payment-methods/manage/commerce_payment_payexpress/edit/3
+
+dependencies[] = commerce
+dependencies[] = commerce_payment
