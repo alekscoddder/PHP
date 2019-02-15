@@ -1,0 +1,9 @@
+name = Binga
+description = Binga payment method in drupal commerce.
+package = Commerce
+core = 7.x
+configure = admin/commerce/config/payment-methods/manage/commerce_payment_binga/edit/3
+# configure = admin/config/development/binga
+
+dependencies[] = commerce
+dependencies[] = commerce_payment

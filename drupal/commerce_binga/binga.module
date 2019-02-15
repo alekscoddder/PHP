@@ -1,0 +1,372 @@
+<?php
+/*
+ * Implements hook_commerce_payment_method_info().
+ * This hook will define the Binga payment method
+ */
+function binga_commerce_payment_method_info() {
+    $payment_methods = array();
+    $payment_methods['binga'] = array(
+        'base' => 'binga',
+        'title' => t('Binga'),
+        'short_title' => t('Binga'),
+        'display_title' => t('Pay via Binga'),
+        'description' => t('Passerelle de paiement Binga'),
+        'terminal' => TRUE,
+        'offsite' => TRUE,
+    );
+    return $payment_methods;
+}
+
+/*
+ * Implements hook_menu() 
+ */
+function binga_menu() {
+    $items = array();
+    $items['binga/callback/%'] = array(
+        'page callback' => 'binga_callback',
+        'page arguments' => array(2),
+        'access callback' => TRUE,
+        'type' => MENU_CALLBACK,
+    );
+    $items['binga/order/%'] = array(
+        'page callback' => 'binga_order',
+        'page arguments' => array(2),
+        'access callback' => TRUE,
+        'type' => MENU_CALLBACK,
+    );
+    return $items;
+}
+
+/*
+* Configure page form.
+* Defined default variable.
+*/
+function binga_settings_form($settings = NULL) {
+    $form = array();
+    $settings = (array) $settings + array(
+        'webservice_url' => t('http://preprod.binga.ma/bingaApi/api/orders/pay'),
+        'storeId' => '',
+        'privatekey' => '',
+    );
+    $form['webservice_url'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Server To Server Web Service URL'),
+        '#description' => t('Binga gateway URL'),
+        '#default_value' => $settings['webservice_url'],
+    );
+    $form['storeId'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Store Id'),
+        '#description' => t('Your Binga Store Id'),
+        '#default_value' => $settings['storeId'],
+    );
+    $form['privatekey'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Private Key'),
+        '#description' => t('Your Binga Private Key'),
+        '#default_value' => $settings['privatekey'],
+    );
+    return $form;
+}
+
+/*
+ * Payment method callback: settings form.
+ * Returns form elements for the payment method's settings form included
+ * as part of the payment method's enabling action in Rules.
+ */
+function binga_submit_form($payment_method, $pane_values, $checkout_pane, $order) {
+    $form = array();
+    $form['info'] = array(
+        '#markup' => t('Payer en toute securite via Binga.'),
+        '#prefix' => '<div>',
+        '#suffix' => '</div>',
+    );
+    return $form;
+}
+
+/**
+ * Payment method callback: redirect form
+ */
+function binga_redirect_form($form, &$form_state, $order, $payment_method) {
+	$isok = true;
+    if (empty($payment_method['settings']['webservice_url'])) {$isok = false;}
+    if (empty($payment_method['settings']['storeId'])) {$isok = false;}
+    if (empty($payment_method['settings']['privatekey'])) {$isok = false;}
+    if (!$isok) {
+        drupal_set_message(t('Binga gateway is not configured for use. Please verify your Binga gateway settings.'), 'error');
+        return array();
+    }
+    $wrapper = entity_metadata_wrapper('commerce_order', $order);
+    $customer = $wrapper->commerce_customer_billing->commerce_customer_address->value();
+    $account_settings = $payment_method['settings'];
+	$callback_url = url('binga/callback/' . $order->order_id, array('absolute' => TRUE));
+	
+	$externalId = 'Order #'.$order->order_id;
+	$amount = commerce_currency_amount_to_decimal($order->commerce_order_total['und']['0']['amount'], $order->commerce_order_total['und']['0']['currency_code']);
+	$buyerFirstName = $customer['first_name'];
+	$buyerLastName = $customer['last_name'];
+	$buyerEmail = $order->mail;
+	$buyerAddress = $customer['thoroughfare'].', '.$customer['locality'].', '.$customer['postal_code'];
+	if (!$customer['data'] || isset($customer['data'])) {
+		$data = unserialize($customer['data']);
+		if (!$data['phone_number'] || isset($data['phone_number'])) {
+			$buyerPhone = $data['phone_number'];
+		}
+	}
+	$sendUrl = $account_settings['webservice_url'];
+	$payUrl = $callback_url;
+	$storeId = $account_settings['storeId'];
+	$privatekey = $account_settings['privatekey'];
+	$str = 'PRE-PAY'.$amount.$storeId.$externalId.$buyerEmail.$privatekey;
+	$orderCheckSum = MD5($str);
+	$ch = curl_init();
+	curl_setopt($ch, CURLOPT_URL, $sendUrl);
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+	$temp2 = 'apiVersion=1.1';
+	$temp2 .= '&externalId='.$externalId;
+	$temp2 .= '&expirationDate='.date('Y-m-d\TH:i:sT', strtotime("+15 day"));
+	$temp2 .= '&amount='.$amount;
+	$temp2 .= '&buyerFirstName='.$buyerFirstName;
+	$temp2 .= '&buyerLastName='.$buyerLastName;
+	$temp2 .= '&buyerEmail='.$buyerEmail;
+	$temp2 .= '&buyerAddress='.$buyerAddress;
+	$temp2 .= '&buyerPhone='.$buyerPhone;
+	$temp2 .= '&storeId='.$storeId;
+	$temp2 .= '&successUrl=';
+	$temp2 .= '&failureUrl=';
+	$temp2 .= '&payUrl='.$payUrl;
+	$temp2 .= '&bookUrl=';
+	$temp2 .= '&orderCheckSum='.$orderCheckSum;
+	curl_setopt($ch, CURLOPT_POSTFIELDS, $temp2);
+	curl_setopt($ch, CURLOPT_POST, true);
+	curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+	curl_setopt($ch, CURLOPT_USERPWD, "binga.api.login:binga.api.secret"); //Your credentials goes here
+	curl_setopt($ch, CURLOPT_HTTPHEADER, array('Accept: application/json'));
+	$result = curl_exec($ch);
+	curl_close ($ch);
+	$parser = json_decode($result, true);
+	if ($parser['result'] == 'success') {
+		$order->data['request_result'] = $parser;
+		commerce_checkout_complete($order);
+		drupal_goto('/binga/order/' . $order->order_id);
+		exit;
+	}
+	if ($parser['result'] == 'error') {
+		drupal_set_message('Error:' . curl_error($ch), 'error');
+		return array();
+	}
+}
+
+/*
+ * Payment method hook_menu callback: submint paiement
+ */
+function binga_callback($order_id) {
+	
+	$order = commerce_order_load($order_id);
+	if ($order) {$payment_method = commerce_payment_method_instance_load($order->data['payment_method']);}
+	if (!$payment_method || $payment_method['method_id'] != 'binga') {return FALSE;}
+    $account_settings = $payment_method['settings'];
+	if('Order #'.$order->order_id == $_POST['externalId']) {
+		$transaction_id = binga_get_payment_transaction($order->order_id);
+		if ($transaction_id == false) {$transaction = commerce_payment_transaction_new('binga', $order->order_id);} 
+		else {$transaction = commerce_payment_transaction_load($transaction_id);}
+		$transaction->instance_id = $payment_method['instance_id'];
+		$transaction->remote_id = $_POST['code'];
+		$transaction->amount = $order->commerce_order_total[LANGUAGE_NONE][0]['amount'];
+		$transaction->currency_code = $order->commerce_order_total[LANGUAGE_NONE][0]['currency_code'];
+		$transaction->remote_status = 'OK';
+		$transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
+		$transaction->message = 'Pending';
+		$transaction->payload = $_POST;
+		commerce_payment_transaction_save($transaction);
+		commerce_order_status_update($order, 'processing'); 
+		echo '100;'.date('Y-m-d\TH:i:sT');
+	}
+	else{
+		echo '000;'.date('Y-m-d\TH:i:sT');
+	}
+	exit;
+}
+
+/*
+ * Payment method hook_menu callback: order page
+ */
+function binga_order($order_id) {
+	$order = commerce_order_load($order_id);
+	$parser = $order->data['request_result'];
+	$date = date_create_from_format('Y-m-d\TH:i:s\Z', $parser['orders']['order']['expirationDate']);
+	$date->getTimestamp();
+	$expdate = $date->format('d/m/Y à H:i');
+	$out = '
+		<div class="binga_result">
+			<div class="binga_result_info">
+				<table border="0" width="100%">
+					<tbody>
+						<tr valign="top">
+							<td width="50%">
+								<table border="0" width="100%">
+									<tbody>
+										<tr>
+											<td colspan="3" style="background-color:#ddd;padding:4px 8px;font-size:14px;font-style:normal;border-bottom:1px solid #d1d1d1;color:#000"> <strong>Détail Commande</strong></td>
+										</tr>
+										<tr>
+											<td width="30%"><strong>Identifiant</strong></td>
+											<td width="5%"><strong>:&nbsp;</strong></td>
+											<td width="65%">'.$parser['orders']['order']['externalId'].'</td>
+										</tr>
+										<tr>
+											<td valign="top"><strong>Marchand</strong></td>
+											<td valign="top"><strong>:</strong></td>
+											<td>Binga</td>
+										</tr>
+										<tr>
+											<td valign="top"><strong>Montant</strong></td>
+											<td valign="top"><strong>:</strong></td>
+											<td> '.$parser['orders']['order']['totalAmount'].'&nbsp;DH</td>
+										</tr>
+									</tbody>
+								</table>
+							</td>
+							<td width="50%">
+								<center>
+									<table border="0" width="100%">
+										<tbody>
+											<tr>
+												<td colspan="3" style="background-color:#ddd;padding:4px 8px;font-size:14px;font-style:normal;border-bottom:1px solid #d1d1d1;color:#000"><strong>Informations Client</strong></td>
+											</tr>
+											<tr>
+												<td width="20%"><strong>Nom</strong></td>
+												<td width="5%"><strong>:</strong></td>
+												<td width="75%">
+													'.$parser['orders']['order']['buyerFirstName'].' '.$parser['orders']['order']['buyerLastName'].'</td>
+											</tr>
+											<tr>
+												<td width="20%"><strong>Adresse</strong></td>
+												<td width="5%"><strong>:</strong></td>
+												<td width="75%">'.$parser['orders']['order']['buyerAddress'].'</td>
+											</tr>
+											<tr>
+												<td width="20%"><strong>Tél</strong></td>
+												<td width="5%"><strong>:</strong></td>
+												<td width="75%">'.$parser['orders']['order']['buyerPhone'].'</td>
+											</tr>
+											<tr>
+												<td width="20%"><strong>E-mail</strong></td>
+												<td width="5%"><strong>:</strong></td>
+												<td width="75%"><a href="mailto:'.$parser['orders']['order']['buyerEmail'].'" target="_blank">'.$parser['orders']['order']['buyerEmail'].'</a></td>
+											</tr>
+										</tbody>
+									</table>
+								</center>
+							</td>
+						</tr>
+						<tr>
+							<td colspan="2">
+								<table width="100%">
+									<tbody>
+										<tr style="font-family:arial,helvetica,sans-serif;font-size:small">
+											<td>
+												<table style="font-size:14px" cellpadding="4" cellspacing="0" width="100%">
+													<tbody>
+														<tr>
+															<td colspan="3" style="background-color:#ddd;padding:4px 8px;font-size:14px;font-style:normal;border-bottom:1px solid #d1d1d1;color:#000"><strong>Détail Montant</strong></td>
+														</tr>
+														<tr>
+															<td width="">Montant de réservation</td>
+															<td width="5%"><strong>:</strong></td>
+															<td style="text-align:right" width="40%">'.$parser['orders']['order']['amount'].'&nbsp;DH</td>
+														</tr>
+														<tr>
+															<td width="">Frais de service</td>
+															<td width="5%"><strong>:</strong></td>
+															<td style="text-align:right" width="40%">'.$parser['orders']['order']['clientServiceCharge'].'&nbsp;DH</td>
+														</tr>
+														<tr>
+															<td width="">Droits de timbre</td>
+															<td width="5%"><strong>:</strong></td>
+															<td style="text-align:right" width="40%">'.$parser['orders']['order']['clientStampDuty'].'&nbsp;DH</td>
+														</tr>
+														<tr style="font-weight:bold">
+															<td style="border-top:1px solid rgb(204,204,204);font-weight:bold">Total</td>
+															<td style="border-top:1px solid rgb(204,204,204);font-weight:bold" width="5%"><strong>:</strong></td>
+															<td style="border-top:1px solid rgb(204,204,204);text-align:right;font-weight:bold" width="40%">'.$parser['orders']['order']['totalAmount'].'&nbsp;DH</td>
+														</tr>
+													</tbody>
+												</table>
+											</td>
+										</tr>
+									</tbody>
+								</table>
+							</td>
+						</tr>
+						<tr>
+							<td colspan="2" style="border-top:3px solid rgb(204,204,204)" align="center">
+								<br>
+								<p style="text-align:left;font-size:14px">
+									<label><strong>Code de votre réservation:</strong></label>
+									'.$parser['orders']['order']['code'].'
+								</p>
+								<p style="padding:0pt 12px;width:315px"><img alt="" width="300"></p>
+							</td>
+						</tr>
+						<tr>
+							<td colspan="2" style="border-top:3px solid rgb(204,204,204)" align="center">
+								<p style="text-align:left;margin-top:10px">
+									<b style="font-weight:bold;font-size:14px">Instructions:</b>
+								</p>
+								<ol style="padding:10px 30px;text-align:left;font-weight:bold;clear:both;">
+									<li>Imprimez votre réservation binga</li>
+									<li>
+										Rendez-vous à l\'
+										<a href="http://www.wafacash.ma/reseau" target="_blank">agence Wafacash la plus proche</a>
+										avec votre réservation binga avant '.$expdate.' (GMT)
+									</li>
+									<li>Effectuez le règlement sur place</li>
+									<li>
+										Connectez-vous sur votre compte Binga
+										<a href="https://www.binga.ma/customer" target="_blank"><b>en cliquant ici</b></a>
+										pour visualiser et	imprimer votre bon d\'achat
+									</li>
+								</ol>
+							</td>
+						</tr>
+					</tbody>
+				</table>				
+			</div>
+			<style>
+				.binga_result tr {
+					background: none;
+				}
+				.binga_result tr td, .binga_result tr th {
+					border: 1px solid #ccc;
+				}				
+			</style>
+			<div class="binga_result_next">
+				<a href="/checkout/' . $order->order_id.'/complete" class="binga_result_next_button">Next</a>
+			</div>
+		</div>
+		';
+		  $content['raw_markup'] = array(
+			'#type' => 'markup',
+			'#markup' => $out,
+		  );
+			return $content;
+	exit;
+}
+
+/*
+ * Function for found transaction id.
+ */
+function binga_get_payment_transaction($order_id) {
+    $query = new EntityFieldQuery;
+    $result = $query
+            ->entityCondition('entity_type', 'commerce_payment_transaction')
+            ->propertyCondition('payment_method', 'binga')
+            ->propertyCondition('order_id', $order_id)
+            ->execute();
+    if (isset($result['commerce_payment_transaction']) && count($result['commerce_payment_transaction']) > 0) {
+        $transaction = array_pop($result['commerce_payment_transaction']);
+        return $transaction->transaction_id;
+    }
+    return FALSE;
+}
